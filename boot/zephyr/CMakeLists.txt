@@ -127,7 +127,19 @@ zephyr_library_sources(
   ${BOOT_DIR}/bootutil/src/bootutil_area.c
   ${BOOT_DIR}/bootutil/src/bootutil_loader.c
   ${BOOT_DIR}/bootutil/src/fault_injection_hardening.c
-  )
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/ed25519.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/modm-donna-32bit.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/ed25519-donna-impl-base.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/ed25519-donna-32bit-tables.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/curve25519-donna-32bit.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/ed25519-donna/curve25519-donna-helpers.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/sha2.c
+  ${BOOT_DIR}/bootutil/trezor-crypto/memzero.c
+)
+
+# Disable Ed25519 precomputation:
+zephyr_library_compile_definitions(ED25519_NO_PRECOMP)
+
 
 if((CONFIG_BOOT_ENCRYPT_X25519 AND CONFIG_BOOT_ED25519_PSA)
    OR (CONFIG_BOOT_ENCRYPT_EC256 AND CONFIG_BOOT_ECDSA_PSA))
