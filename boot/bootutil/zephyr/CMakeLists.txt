@@ -9,6 +9,7 @@ zephyr_interface_library_named(MCUBOOT_BOOTUTIL)
 target_include_directories(MCUBOOT_BOOTUTIL INTERFACE
   ../
   ../include
+  ../trezor-crypto
   ../../zephyr/include
 )
 
