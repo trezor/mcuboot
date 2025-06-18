@@ -331,6 +331,13 @@ endif
 
 if !BOOT_SIGNATURE_USING_KMU
 
+config BOOT_PRODUCTION_KEY
+    bool "Use production key for signature verification"
+    default n
+    help
+      If y, the production key is used for signature verification.
+      If n, the development key is used for signature verification.
+
 config BOOT_SIGNATURE_KEY_FILE
 	string "PEM key file"
 	default "root-ec-p256.pem" if BOOT_SIGNATURE_TYPE_ECDSA_P256
