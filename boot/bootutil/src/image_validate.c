@@ -274,6 +274,7 @@ static const uint16_t allowed_unprot_tlvs[] = {
 
 #include <ed25519-donna/ed25519.h>
 
+#ifndef MCUBOOT_PRODUCTION_KEY
 const uint8_t BOOTLOADER_KEY_M = 2;
 const uint8_t BOOTLOADER_KEY_N = 3;
 static const uint8_t * const BOOTLOADER_KEYS[] = {
@@ -282,6 +283,9 @@ static const uint8_t * const BOOTLOADER_KEYS[] = {
   (const uint8_t *)"\x63\x55\x69\x1c\x17\x8a\x8f\xf9\x10\x07\xa7\x47\x8a\xfb\x95\x5e\xf7\x35\x2c\x63\xe7\xb2\x57\x03\x98\x4c\xf7\x8b\x26\xe2\x1a\x56",
   (const uint8_t *)"\xee\x93\xa4\xf6\x6f\x8d\x16\xb8\x19\xbb\x9b\xeb\x9f\xfc\xcd\xfc\xdc\x14\x12\xe8\x7f\xee\x6a\x32\x4c\x2a\x99\xa1\xe0\xe6\x71\x48",
 };
+#else
+#error Production keys are not defined.
+#endif
 
 /*
 Function that computes a combined public key for a multi-signature (multisig) cryptographic scheme using Ed25519 elliptic curve cryptography.
