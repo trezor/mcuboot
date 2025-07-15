@@ -95,6 +95,7 @@ TLV_VALUES = {
         'UUID_VID': 0x74,
         'UUID_CID': 0x75,
         'MANIFEST': 0x76,
+        'SIGMASK': 0xA2,
 }
 
 TLV_SIZE = 4
