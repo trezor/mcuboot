@@ -94,6 +94,7 @@ TLV_VALUES = {
         'DECOMP_SIZE': 0x70,
         'DECOMP_SHA': 0x71,
         'DECOMP_SIGNATURE': 0x72,
+        'SIGMASK': 0xA2,
 }
 
 TLV_SIZE = 4

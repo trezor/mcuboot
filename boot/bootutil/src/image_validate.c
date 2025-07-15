@@ -170,12 +170,14 @@ bootutil_img_hash(struct enc_key_data *enc_state, int image_index,
 /*
     * The following TLVs are expected to be present in the image.
     *
-    * EXPECTED_SIG_TLV contains the signature of the image.
+    * EXPECTED_SIG_1_TLV contains the signature 1 of the image.
+    * EXPECTED_SIG_2_TLV contains the signature 2 of the image.
     * EXPECTED_SIGMASK_TLV contains the bitmask of the signers that signed the image, and is
     * used to compute the public key against which the signature is verified.
     */
-#define EXPECTED_SIG_TLV 0x00A0
-#define EXPECTED_SIGMASK_TLV 0x00A1
+#define EXPECTED_SIG_0_TLV 0x00A0
+#define EXPECTED_SIG_1_TLV 0x00A1
+#define EXPECTED_SIGMASK_TLV 0x00A2
 #define SIG_BUF_SIZE 64
 #define EXPECTED_SIG_LEN(x) ((x) == SIG_BUF_SIZE)
 
@@ -263,8 +265,8 @@ static const uint16_t allowed_unprot_tlvs[] = {
      IMAGE_TLV_ENC_KW,
      IMAGE_TLV_ENC_EC256,
      IMAGE_TLV_ENC_X25519,
-     EXPECTED_SIG_TLV,
-     EXPECTED_SIGMASK_TLV,
+     EXPECTED_SIG_0_TLV,
+     EXPECTED_SIG_1_TLV,
      /* Mark end with ANY. */
      IMAGE_TLV_ANY,
 };
@@ -287,42 +289,6 @@ static const uint8_t * const BOOTLOADER_KEYS[] = {
 #error Production keys are not defined.
 #endif
 
-/*
-Function that computes a combined public key for a multi-signature (multisig) cryptographic scheme using Ed25519 elliptic curve cryptography.
-
-The function validates parameters and combines multiple Ed25519 public keys into a single aggregate public key based on which signers participated in signing.
-Parameters
-
- - sig_m: Minimum number of signatures required (threshold)
- - sig_n: Total number of possible signers
- - pub: Array of pointers to public keys from all possible signers
- - sigmask: Bitmask indicating which signers actually participated
- - res: Output buffer for the resulting combined public key
-*/
-static bool compute_pubkey(uint8_t sig_m, uint8_t sig_n,
-                              const uint8_t *const *pub, uint8_t sigmask,
-                              ed25519_public_key res) {
-  if (0 == sig_m || 0 == sig_n) return false;
-  if (sig_m > sig_n) return false;
-
-  // discard bits higher than sig_n
-  sigmask &= ((1 << sig_n) - 1);
-
-  // remove if number of set bits in sigmask is not equal to sig_m
-  if (__builtin_popcount(sigmask) != sig_m) return false;
-
-  ed25519_public_key keys[sig_m];
-  int j = 0;
-  for (int i = 0; i < sig_n; i++) {
-    if ((1 << i) & sigmask) {
-      memcpy(keys[j], pub[i], 32);
-      j++;
-    }
-  }
-
-  return (0 == ed25519_cosi_combine_publickeys(res, keys, sig_m));
-}
-
 
 /*
  * Verify the integrity of the image.
@@ -335,7 +301,8 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
                       int seed_len, uint8_t *out_hash)
 {
     int rc = 0;
-    bool sig_found = false;
+    bool sig_0_found = false;
+    bool sig_1_found = false;
     uint16_t sigmask = 0;
     FIH_DECLARE(fih_rc, FIH_FAILURE);
     uint32_t off;
@@ -344,7 +311,8 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
     FIH_DECLARE(valid_signature, FIH_FAILURE);
     struct image_tlv_iter it;
     uint8_t buf[SIG_BUF_SIZE] = {0};
-    uint8_t sig[SIG_BUF_SIZE] = {0};
+    uint8_t sig0[SIG_BUF_SIZE] = {0};
+    uint8_t sig1[SIG_BUF_SIZE] = {0};
     int image_hash_valid = 0;
     uint8_t hash[IMAGE_HASH_SIZE] = {0};
 
@@ -423,7 +391,7 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
               break;
           }
           case EXPECTED_SIGMASK_TLV:
-            if (len != 2) {
+            if (len != 1) {
               rc = -1;
               goto out;
             }
@@ -431,10 +399,10 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
             if (rc) {
               goto out;
             }
-            sigmask = (buf[0] << 8) | buf[1];
+            sigmask = buf[0];
             break;
 
-          case EXPECTED_SIG_TLV:
+          case EXPECTED_SIG_0_TLV:
           {
               if (!EXPECTED_SIG_LEN(len) || len > sizeof(buf)) {
                   rc = -1;
@@ -445,36 +413,67 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
                   goto out;
               }
 
-              if (sig_found) {
+              if (sig_0_found) {
                   /* We already found a signature, but we should only have one. */
                   rc = -1;
                   goto out;
               }
 
-              sig_found = true;
+              sig_0_found = true;
 
-              memcpy(sig, buf, len);
+              memcpy(sig0, buf, len);
+              break;
+          }
+          case EXPECTED_SIG_1_TLV:
+          {
+              if (!EXPECTED_SIG_LEN(len) || len > sizeof(buf)) {
+                  rc = -1;
+                  goto out;
+              }
+              rc = LOAD_IMAGE_DATA(hdr, fap, off, buf, len);
+              if (rc) {
+                  goto out;
+              }
+
+              if (sig_1_found) {
+                  /* We already found a signature, but we should only have one. */
+                  rc = -1;
+                  goto out;
+              }
+
+              sig_1_found = true;
+
+              memcpy(sig1, buf, len);
               break;
           }
         }
     }
 
-    if (sigmask == 0 || !sig_found) {
+    if (sigmask == 0 || !sig_0_found || !sig_1_found) {
         rc = -1;
         goto out;
     }
 
-    ed25519_public_key pub;
-    if (true != compute_pubkey(BOOTLOADER_KEY_M, BOOTLOADER_KEY_N, BOOTLOADER_KEYS, sigmask, pub))
-    {
+    int sig0_idx = sigmask & (1 << 0) ? 0 : 1;
+    int sig1_idx = sigmask & (1 << 2) ? 2 : 1;
+
+    // There must be two different signatures to verify
+    if (sig0_idx == sig1_idx) {
         rc = -1;
         goto out;
     } else {
         valid_signature = FIH_SUCCESS;
     }
 
-    if (FIH_NOT_EQ(0, ed25519_sign_open(hash, sizeof(hash), pub,
-                            *(const ed25519_signature *)sig))){
+
+    if (FIH_NOT_EQ(0, ed25519_sign_open(hash, sizeof(hash), BOOTLOADER_KEYS[sig0_idx],
+                            *(const ed25519_signature *)sig0))){
+        rc = -1;
+        goto out;
+    }
+
+    if (FIH_NOT_EQ(0, ed25519_sign_open(hash, sizeof(hash), BOOTLOADER_KEYS[sig1_idx],
+                            *(const ed25519_signature *)sig1))){
         rc = -1;
         goto out;
     }
