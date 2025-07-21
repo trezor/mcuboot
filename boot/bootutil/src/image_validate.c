@@ -277,7 +277,6 @@ static const uint16_t allowed_unprot_tlvs[] = {
 #include <ed25519-donna/ed25519.h>
 
 #ifndef MCUBOOT_PRODUCTION_KEY
-const uint8_t BOOTLOADER_KEY_M = 2;
 const uint8_t BOOTLOADER_KEY_N = 3;
 static const uint8_t * const BOOTLOADER_KEYS[] = {
   /*** DEVEL/QA KEYS  ***/
@@ -457,8 +456,18 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
     int sig0_idx = sigmask & (1 << 0) ? 0 : 1;
     int sig1_idx = sigmask & (1 << 2) ? 2 : 1;
 
+    if (FIH_NOT_EQ(__builtin_popcount(sigmask), 2)) {
+        rc = -1;
+        goto out;
+    }
+
+    if (FIH_NOT_EQ((sigmask & (~((1 << BOOTLOADER_KEY_N) - 1))), 0)){
+        rc = -1;
+        goto out;
+    }
+
     // There must be two different signatures to verify
-    if (sig0_idx == sig1_idx) {
+    if (FIH_EQ(sig0_idx, sig1_idx)) {
         rc = -1;
         goto out;
     } else {
