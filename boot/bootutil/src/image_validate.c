@@ -178,6 +178,7 @@ bootutil_img_hash(struct enc_key_data *enc_state, int image_index,
 #define EXPECTED_SIG_0_TLV 0x00A0
 #define EXPECTED_SIG_1_TLV 0x00A1
 #define EXPECTED_SIGMASK_TLV 0x00A2
+#define EXPECTED_MODEL_TLV 0x00A3
 #define SIG_BUF_SIZE 64
 #define EXPECTED_SIG_LEN(x) ((x) == SIG_BUF_SIZE)
 
@@ -307,6 +308,7 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
     int rc = 0;
     bool sig_0_found = false;
     bool sig_1_found = false;
+    bool model_valid = false;
     uint16_t sigmask = 0;
     FIH_DECLARE(fih_rc, FIH_FAILURE);
     uint32_t off;
@@ -450,10 +452,37 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
               memcpy(sig1, buf, len);
               break;
           }
+          case EXPECTED_MODEL_TLV:
+          {
+              uint32_t model_identifier = 0;
+              if (len != sizeof(model_identifier)) {
+                  rc = -1;
+                  goto out;
+              }
+
+              rc = LOAD_IMAGE_DATA(hdr, fap, off, &model_identifier, len);
+              if (rc) {
+                  goto out;
+              }
+
+              if (model_identifier == MODEL_IDENTIFIER) {
+                  model_valid = true;
+              } else {
+                  rc = -1;
+                  goto out;
+              }
+
+              break;
+          }
         }
     }
 
     if (sigmask == 0 || !sig_0_found || !sig_1_found) {
+        rc = -1;
+        goto out;
+    }
+
+    if (!model_valid) {
         rc = -1;
         goto out;
     }
