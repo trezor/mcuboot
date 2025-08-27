@@ -331,6 +331,9 @@ endif
 
 if !BOOT_SIGNATURE_USING_KMU
 
+config MODEL_IDENTIFIER
+    int "Model identifier"
+
 config BOOT_PRODUCTION_KEY
     bool "Use production key for signature verification"
     default n
