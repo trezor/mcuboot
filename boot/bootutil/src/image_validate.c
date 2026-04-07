@@ -36,7 +36,6 @@
 #include "bootutil/image.h"
 #include "bootutil/crypto/sha.h"
 #include "bootutil/sign_key.h"
-#include "bootutil/security_cnt.h"
 #include "bootutil/fault_injection_hardening.h"
 
 #include "mcuboot_config/mcuboot_config.h"
@@ -46,127 +45,6 @@
 BOOT_LOG_MODULE_DECLARE(mcuboot);
 
 #include "bootutil_priv.h"
-
-/*
- * Compute SHA hash over the image.
- * (SHA384 if ECDSA-P384 is being used,
- *  SHA256 otherwise).
- */
-static int
-bootutil_img_hash(struct enc_key_data *enc_state, int image_index,
-                  struct image_header *hdr, const struct flash_area *fap,
-                  uint8_t *tmp_buf, uint32_t tmp_buf_sz, uint8_t *hash_result,
-                  uint8_t *seed, int seed_len)
-{
-    bootutil_sha_context sha_ctx;
-    uint32_t size;
-    uint16_t hdr_size;
-    uint32_t blk_off;
-    uint32_t tlv_off;
-#if !defined(MCUBOOT_HASH_STORAGE_DIRECTLY)
-    int rc;
-    uint32_t off;
-    uint32_t blk_sz;
-#endif
-
-#if (BOOT_IMAGE_NUMBER == 1) || !defined(MCUBOOT_ENC_IMAGES) || \
-    defined(MCUBOOT_RAM_LOAD)
-    (void)enc_state;
-    (void)image_index;
-    (void)hdr_size;
-    (void)blk_off;
-    (void)tlv_off;
-#ifdef MCUBOOT_RAM_LOAD
-    (void)blk_sz;
-    (void)off;
-    (void)rc;
-    (void)fap;
-    (void)tmp_buf;
-    (void)tmp_buf_sz;
-#endif
-#endif
-
-#ifdef MCUBOOT_ENC_IMAGES
-    /* Encrypted images only exist in the secondary slot */
-    if (MUST_DECRYPT(fap, image_index, hdr) &&
-            !boot_enc_valid(enc_state, 1)) {
-        return -1;
-    }
-#endif
-
-    bootutil_sha_init(&sha_ctx);
-
-    /* in some cases (split image) the hash is seeded with data from
-     * the loader image */
-    if (seed && (seed_len > 0)) {
-        bootutil_sha_update(&sha_ctx, seed, seed_len);
-    }
-
-    /* Hash is computed over image header and image itself. */
-    size = hdr_size = hdr->ih_hdr_size;
-    size += hdr->ih_img_size;
-    tlv_off = size;
-
-    /* If protected TLVs are present they are also hashed. */
-    size += hdr->ih_protect_tlv_size;
-
-#ifdef MCUBOOT_HASH_STORAGE_DIRECTLY
-    /* No chunk loading, storage is mapped to address space and can
-     * be directly given to hashing function.
-     */
-    bootutil_sha_update(&sha_ctx, (void *)flash_area_get_off(fap), size);
-#else /* MCUBOOT_HASH_STORAGE_DIRECTLY */
-#ifdef MCUBOOT_RAM_LOAD
-    bootutil_sha_update(&sha_ctx,
-                        (void*)(IMAGE_RAM_BASE + hdr->ih_load_addr),
-                        size);
-#else
-    for (off = 0; off < size; off += blk_sz) {
-        blk_sz = size - off;
-        if (blk_sz > tmp_buf_sz) {
-            blk_sz = tmp_buf_sz;
-        }
-#ifdef MCUBOOT_ENC_IMAGES
-        /* The only data that is encrypted in an image is the payload;
-         * both header and TLVs (when protected) are not.
-         */
-        if ((off < hdr_size) && ((off + blk_sz) > hdr_size)) {
-            /* read only the header */
-            blk_sz = hdr_size - off;
-        }
-        if ((off < tlv_off) && ((off + blk_sz) > tlv_off)) {
-            /* read only up to the end of the image payload */
-            blk_sz = tlv_off - off;
-        }
-#endif
-        rc = flash_area_read(fap, off, tmp_buf, blk_sz);
-        if (rc) {
-            bootutil_sha_drop(&sha_ctx);
-            return rc;
-        }
-#ifdef MCUBOOT_ENC_IMAGES
-        if (MUST_DECRYPT(fap, image_index, hdr)) {
-            /* Only payload is encrypted (area between header and TLVs) */
-            int slot = flash_area_id_to_multi_image_slot(image_index,
-                            flash_area_get_id(fap));
-
-            if (off >= hdr_size && off < tlv_off) {
-                blk_off = (off - hdr_size) & 0xf;
-                boot_enc_decrypt(enc_state, slot, off - hdr_size,
-                                 blk_sz, blk_off, tmp_buf);
-            }
-        }
-#endif
-        bootutil_sha_update(&sha_ctx, tmp_buf, blk_sz);
-    }
-#endif /* MCUBOOT_RAM_LOAD */
-#endif /* MCUBOOT_HASH_STORAGE_DIRECTLY */
-    bootutil_sha_finish(&sha_ctx, hash_result);
-    bootutil_sha_drop(&sha_ctx);
-
-    return 0;
-}
-
 
 /*
     * The following TLVs are expected to be present in the image.
@@ -182,68 +60,6 @@ bootutil_img_hash(struct enc_key_data *enc_state, int image_index,
 #define EXPECTED_MODEL_TLV 0x00A3
 #define SIG_BUF_SIZE 64
 #define EXPECTED_SIG_LEN(x) ((x) == SIG_BUF_SIZE)
-
-
-
-/**
- * Reads the value of an image's security counter.
- *
- * @param hdr           Pointer to the image header structure.
- * @param fap           Pointer to a description structure of the image's
- *                      flash area.
- * @param security_cnt  Pointer to store the security counter value.
- *
- * @return              0 on success; nonzero on failure.
- */
-int32_t
-bootutil_get_img_security_cnt(struct image_header *hdr,
-                              const struct flash_area *fap,
-                              uint32_t *img_security_cnt)
-{
-    struct image_tlv_iter it;
-    uint32_t off;
-    uint16_t len;
-    int32_t rc;
-
-    if ((hdr == NULL) ||
-        (fap == NULL) ||
-        (img_security_cnt == NULL)) {
-        /* Invalid parameter. */
-        return BOOT_EBADARGS;
-    }
-
-    /* The security counter TLV is in the protected part of the TLV area. */
-    if (hdr->ih_protect_tlv_size == 0) {
-        return BOOT_EBADIMAGE;
-    }
-
-    rc = bootutil_tlv_iter_begin(&it, hdr, fap, IMAGE_TLV_SEC_CNT, true);
-    if (rc) {
-        return rc;
-    }
-
-    /* Traverse through the protected TLV area to find
-     * the security counter TLV.
-     */
-
-    rc = bootutil_tlv_iter_next(&it, &off, &len, NULL);
-    if (rc != 0) {
-        /* Security counter TLV has not been found. */
-        return -1;
-    }
-
-    if (len != sizeof(*img_security_cnt)) {
-        /* Security counter is not valid. */
-        return BOOT_EBADIMAGE;
-    }
-
-    rc = LOAD_IMAGE_DATA(hdr, fap, off, img_security_cnt, len);
-    if (rc != 0) {
-        return BOOT_EFLASH;
-    }
-
-    return 0;
-}
 
 
 
@@ -302,7 +118,7 @@ static const uint8_t * const BOOTLOADER_KEYS[] = {
  * Return non-zero if image could not be validated/does not validate.
  */
 fih_ret
-bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
+bootutil_img_validate(struct boot_loader_state *state,
                       struct image_header *hdr, const struct flash_area *fap,
                       uint8_t *tmp_buf, uint32_t tmp_buf_sz, uint8_t *seed,
                       int seed_len, uint8_t *out_hash)
@@ -324,7 +140,7 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
     int image_hash_valid = 0;
     uint8_t hash[IMAGE_HASH_SIZE] = {0};
 
-    rc = bootutil_img_hash(enc_state, image_index, hdr, fap, tmp_buf,
+    rc = bootutil_img_hash(state, hdr, fap, tmp_buf,
             tmp_buf_sz, hash, seed, seed_len);
     if (rc) {
         goto out;
@@ -339,7 +155,7 @@ bootutil_img_validate(struct enc_key_data *enc_state, int image_index,
         goto out;
     }
 
-    if (it.tlv_end > bootutil_max_image_size(fap)) {
+    if (it.tlv_end > bootutil_max_image_size(state, fap)) {
         rc = -1;
         goto out;
     }
