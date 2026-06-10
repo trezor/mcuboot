@@ -140,6 +140,20 @@ zephyr_library_sources(
 # Disable Ed25519 precomputation:
 zephyr_library_compile_definitions(ED25519_NO_PRECOMP)
 
+# memzero.c calls explicit_bzero(), whose <strings.h> prototype picolibc hides
+# under -std=c17 (it is gated by __BSD_VISIBLE, derived from _DEFAULT_SOURCE).
+# Expose a real prototype for this file only, so the call is fully typed:
+#   -D_DEFAULT_SOURCE         -> __BSD_VISIBLE=1, so <strings.h> declares it
+#   -include strings.h        -> actually pull <strings.h> in (memzero.c doesn't)
+#   -D__STDC_WANT_LIB_EXT1__=0 -> keep picolibc's Annex-K errno_t/rsize_t typedefs
+#                                 out (they reference types this picolibc lacks)
+# Build-local on purpose: the trezor-crypto sources symlink to the shared
+# monorepo crypto/, which other toolchains build with explicit_bzero already
+# declared (a source-level prototype there is a redundant-decls error).
+set_source_files_properties(
+  ${BOOT_DIR}/bootutil/trezor-crypto/memzero.c
+  PROPERTIES COMPILE_FLAGS "-D__STDC_WANT_LIB_EXT1__=0 -D_DEFAULT_SOURCE -include strings.h"
+)
 
 if((CONFIG_BOOT_ENCRYPT_X25519 AND CONFIG_BOOT_ED25519_PSA)
    OR (CONFIG_BOOT_ENCRYPT_EC256 AND CONFIG_BOOT_ECDSA_PSA))
