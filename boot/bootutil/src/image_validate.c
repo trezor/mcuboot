@@ -46,6 +46,22 @@ BOOT_LOG_MODULE_DECLARE(mcuboot);
 
 #include "bootutil_priv.h"
 
+
+// trezor crypto fault handler, force hard fault on error, as this is a security critical function
+void tc_fault_handler(const char *msg) {
+    (void)msg;
+
+    /* Execute an undefined instruction (udf on Cortex-M). This raises a
+     * UsageFault that escalates to a HardFault, unconditionally aborting
+     * execution so control never returns to the security-critical caller. */
+    __builtin_trap();
+
+    /* Backstop: never allow the caller to continue even if the trap above is
+     * somehow bypassed. */
+    while (1) {}
+}
+
+
 /*
     * The following TLVs are expected to be present in the image.
     *
