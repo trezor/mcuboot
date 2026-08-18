@@ -19,3 +19,7 @@
 [submodule "boot/cypress/libs/cy-mbedtls-acceleration"]
 	path = boot/cypress/libs/cy-mbedtls-acceleration
 	url = https://github.com/cypresssemiconductorco/cy-mbedtls-acceleration.git
+[submodule "ext/sphincsplus"]
+	path = ext/sphincsplus
+	url = https://github.com/sphincs/sphincsplus/
+	branch = consistent-basew
