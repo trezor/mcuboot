@@ -1,0 +1,46 @@
+Vendored from the trezor-firmware monorepo: crypto/
+=====================================================
+
+WHY VENDORED, not symlinked: this repository must build and be CI-able on its own.
+A symlink into the monorepo (which is what this directory used to be) inverts the
+dependency -- the monorepo pins THIS repo in nordic/trezor/west.yml, so nothing here
+may point back at it, or the two form a cycle and mcuboot's own CI cannot resolve the
+tree.
+
+Safe to vendor because these are CRYPTOGRAPHIC PRIMITIVES: any correct SHA-2 /
+Ed25519 implementation interoperates, so this copy drifting from the monorepo's cannot
+break interop between the STM and the nRF. That is NOT true of the PQ image format
+(leaf rule, TLV numbers, message construction) -- which is why that is pinned by the
+cross-validation vectors in the monorepo's tests/fw_merkle instead of by sharing code.
+
+Source commit: 2f30ed7e9bfb079afa4b8b21f952df1baf9eae73
+Update by re-copying these paths from crypto/ and refreshing the digests below
+(monorepo CI can compare them to detect drift).
+
+496a5a80346a0fb48ef3fbf53c0da2b69399e1de224d67962342657a9dfd77d1  byte_order.h
+5bfe0f3b7a79c7d4e8cdd4d052273ae8d4f2e5180a07db0bcad07076220a07c7  consteq.c
+09b70ff94f5daf83a0bfa6bb76a1c110d19456f07b61c0982a16ce2e7b7e4fec  consteq.h
+a82155e446d326f0155a7ef6696b6e425e18cc4a59c50014e16e69ae36e2352d  fault_handler.h
+2f014e8d03420b42fb7b9df39f9150a33ac96d1c48a065f5a908a967561bca02  memzero.c
+ffec031a236dde8df1c0b95cd0c3bd28ca046f6dc62faff36be8401ba82b214a  memzero.h
+762e3f5cf352740183330743d52e8f7aa977797038f97a3c0d8b88ff98074b1a  options.h
+161ecc075038007a61fa7805b2d532bf36dabe521c3de480899eb4b8daa37c66  rand.h
+4e0a22b05988882a1f857084fc6c5a0731a115f5637e9946f65ccd23f361e24a  sha2.c
+acc5ba73f3ca604ebbaa34651d254eee7eaab808198ce60c42c015e723d9a656  sha2.h
+efaa64f1471b7e16a1a2b97f4f328501a80a177743d5700b18799fa338d30b21  ed25519-donna/curve25519-donna-32bit.c
+a4d39914f88b3daef07b81e26163c1b5c7161a85d6d339edf6dd830fa2c69d22  ed25519-donna/curve25519-donna-32bit.h
+aeed56aeef2e3d2136d0f4bcb2a7df8c82d608d21ad63f04d8ed6e0869a961cd  ed25519-donna/curve25519-donna-helpers.c
+5f8a33382d9d4a53b7d88326a4104bd6e35e619676bcf7985146f2c25ffba4b4  ed25519-donna/curve25519-donna-helpers.h
+6b09a09393ce4a4d6cb0fde19db63785b5097d6521c6375fc664c3be8a5c6984  ed25519-donna/curve25519-donna-scalarmult-base.h
+8345a35068d2fe7b39570a60644527a0265ce9cae75eaf70b98c2edb50595b26  ed25519-donna/ed25519-donna-32bit-tables.c
+b8770e7c29cf8dabdda470537e56148a873519909b2de08f31a2dc8d9fe44f45  ed25519-donna/ed25519-donna-32bit-tables.h
+9edbe5f6537d72253acabe4a5c330827bd6802d17a57982837967b6f2ae4bc83  ed25519-donna/ed25519-donna-basepoint-table.h
+1724565c868af1d5af51d104b8ddd2ee6a6c85a6372107be2dd84d7c2c181bbe  ed25519-donna/ed25519-donna-impl-base.c
+1ea034e8b10f2f0474bbb64a0b71408ee0112126742e77b2042ab6d092f76970  ed25519-donna/ed25519-donna-impl-base.h
+181fa91d854115b301633b6ebfb36ea28eef6528cefadc173592352f41ad516c  ed25519-donna/ed25519-donna-portable.h
+51a561027071fcf644817152f43ee3ebbb7cf19bfdf102678058e3ab3638e84b  ed25519-donna/ed25519-donna.h
+1bdce380cbe192dd220ee0786558d2c9d9a7814ebf2f58c46f87a0d0cabf4b42  ed25519-donna/ed25519-hash-custom.h
+ef450fd2ea3296b3d9848e2b4a27d91807011103c95dca493339d6fc0319c55e  ed25519-donna/ed25519.c
+9d9ceea846c11ecd32ca4bc6e19b5169d7ecbc7b4dbabf62b335228df66b721f  ed25519-donna/ed25519.h
+c4529c31b9f17c919b8d9c2fcddb05151c97de36c7c2dcf60dbb84c053e4a2d0  ed25519-donna/modm-donna-32bit.c
+6763fa27aadb7d26d83b825a0bd29a5ccc1662c6b42bd49ae794750b3bb4cd87  ed25519-donna/modm-donna-32bit.h
