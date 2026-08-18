@@ -485,6 +485,25 @@ config BOOT_PRODUCTION_KEY
       If y, the production key is used for signature verification.
       If n, the development key is used for signature verification.
 
+config BOOT_PQ_SECURE_BOOT
+    bool "Verify the image against the Trezor founder Merkle tree (post-quantum)"
+    default n
+    help
+      If y, the image is additionally verified as a leaf of the founder Merkle
+      tree: leaf = H(0x00 || covered range), folded through a co-path carried in
+      the image to modelRoot, which is covered by the founder's hybrid signature
+      (SLH-DSA/SPHINCS+-SHA2-128s + Ed25519, 2-of-3). This is the SAME signature
+      the Trezor STM boot header carries, so one founder signature covers both
+      MCUs and the nRF can verify itself rather than trusting the STM's
+      install-time check -- which matters because an attacker can enter MCUboot
+      serial recovery directly over UART, bypassing the STM entirely.
+
+      Needed on post-quantum-native models (e.g. T3T2). Models that keep the
+      classic Ed25519-only scheme (e.g. T3W1) leave this off and are unaffected.
+
+      Costs roughly 16 kB of image (two 7856-byte SLH-DSA signatures) plus the
+      SPHINCS+ verify code, and one extra hash pass over the image at boot.
+
 config BOOT_SIGNATURE_KEY_FILE
 	string "PEM key file"
 	default "root-ec-p256.pem" if BOOT_SIGNATURE_TYPE_ECDSA_P256
