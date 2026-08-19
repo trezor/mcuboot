@@ -132,8 +132,14 @@ static const uint16_t allowed_unprot_tlvs[] = {
 /*
  * Founder public keys -- the SAME keys the Trezor STM boot header is verified
  * against, because both MCUs verify the SAME founder signature over modelRoot.
- * MUST mirror BOARDLOADER_PQ_KEYS / BOARDLOADER_EC_KEYS in the STM's
- * sec/image/stm32/boot_header.c, INCLUDING the dev/production split:
+ * ONE key set covers ALL models. The founder ceremony signs every model in a
+ * single operation, so the pool is a property of the CEREMONY, not of a model --
+ * hence no per-model selection here. Model separation comes from the TREE (each
+ * model has its own leaves under modelRoot) and from the model-id TLV check in
+ * bootutil_img_validate, never from the key pool.
+ *
+ * MUST mirror ROOT_* in the STM's sec/image/inc/sec/root_keys.h (named after
+ * their trezorlib counterparts), INCLUDING the dev/production split:
  *
  *     STM                          nRF
  *     BOOTLOADER_DEVEL             (default -- no MCUBOOT_PRODUCTION_KEY)
@@ -144,11 +150,20 @@ static const uint16_t allowed_unprot_tlvs[] = {
  * pool has TWO keys while production has THREE, so PQ_KEY_N differs too --
  * a dev image's sigmask 0x03 names dev keys 0 and 1.
  *
+ * KEY ORDER IS LOAD-BEARING: the sigmask names keys by INDEX (slot i uses the i-th
+ * lowest set bit), so reordering silently invalidates every signature ever made.
+ * Append only.
+ *
+ * This is a third copy -- unavoidable, because this repository must build
+ * standalone and cannot include a monorepo header. trezorlib
+ * (firmware/models.py ROOT_*) is what the signer uses and is the authority;
+ * tools/trezor_core_tools/root_keys_check.py proves all three agree.
+ *
  * Cross-check a signed image against a key pool on the host (much faster than a
  * flash cycle): tools/trezor_core_tools/nrf_pq_check.py.
  */
 #ifndef MCUBOOT_PRODUCTION_KEY
-/*** DEVEL/QA FOUNDER KEYS (2) -- boot_header.c #if BOOTLOADER_DEVEL ***/
+/*** DEVEL/QA ROOT KEYS (2) -- root_keys.h ROOT_*_KEYS_DEV ***/
 static const uint8_t * const PQ_SLH_KEYS[] = {
     (const uint8_t *)"\xec\x01\xe6\x02\x63\x02\x4f\x7e\x71\x72\x80\x13\xb7\x31\xf7\xba\x12\x99\xf5\x18\xc2\x7b\xa3\xed\x8f\x4a\x21\x99\x74\x12\x7c\x62",
     (const uint8_t *)"\x8a\xf8\x87\x80\x85\x94\x6e\xd8\xb1\x16\xbd\x24\xc0\xf2\xaa\xc4\x8b\x7e\x8f\x11\xbf\x06\x87\x25\xcc\xfb\xb1\x52\xab\xf7\xa4\xcd",
@@ -158,7 +173,7 @@ static const uint8_t * const PQ_EC_KEYS[] = {
     (const uint8_t *)"\x21\x52\xf8\xd1\x9b\x79\x1d\x24\x45\x32\x42\xe1\x5f\x2e\xab\x6c\xb7\xcf\xfa\x7b\x6a\x5e\xd3\x00\x97\x96\x0e\x06\x98\x81\xdb\x12",
 };
 #else
-/*** PRODUCTION T3W1 FOUNDER KEYS (3) -- MODEL_BOARDLOADER_*_KEYS ***/
+/*** PRODUCTION ROOT KEYS (3) -- root_keys.h ROOT_SLH_DSA_KEYS / ROOT_ED25519_KEYS ***/
 static const uint8_t * const PQ_SLH_KEYS[] = {
     (const uint8_t *)"\xec\x57\xa2\x64\x3e\x55\x3c\x59\x19\x47\x3c\xd5\x79\xcd\xdd\xa6\x50\x05\x7c\x2f\xd5\x98\xa4\x47\x57\x4b\xdb\x6c\x1f\x0f\x55\x21",
     (const uint8_t *)"\xd2\x96\xd8\xcf\x9b\xe3\xe9\x23\xe1\x0a\xc0\x3f\x43\x56\x6d\x18\x9d\x11\xf6\xb5\xdd\xab\xdf\x8d\xc1\x2d\x29\xc0\x0e\x5a\x13\x6a",
