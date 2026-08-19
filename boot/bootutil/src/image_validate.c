@@ -433,13 +433,20 @@ bootutil_img_validate(struct boot_loader_state *state,
         struct pq_read_ctx fctx = { .hdr = hdr, .fap = fap };
         /* it.tlv_end is the true end of the image (hdr+img+prot+unprot), NOT the
          * slot size -- passing the slot size would make the "no founder material"
-         * case cover trailing flash. */
-        if (pq_image_verify(pq_read_image, &fctx, it.tlv_end, PQ_SLH_KEYS,
-                           PQ_EC_KEYS, PQ_KEY_N, NULL) != 0) {
+         * case cover trailing flash.
+         *
+         * FIH_CALL + propagate, never mint: the verdict assigned to
+         * valid_signature is the fih_ret the verifier itself returned, so there is
+         * no point at which a single glitched comparison here can manufacture a
+         * valid signature. FIH_CALL seeds fih_rc with FIH_FAILURE and validates
+         * the CFI counter, which also catches the call being skipped entirely. */
+        FIH_CALL(pq_image_verify, fih_rc, pq_read_image, &fctx, it.tlv_end,
+                 PQ_SLH_KEYS, PQ_EC_KEYS, PQ_KEY_N, NULL);
+        if (FIH_NOT_EQ(fih_rc, FIH_SUCCESS)) {
             rc = -1;
             goto out;
         }
-        valid_signature = FIH_SUCCESS;
+        FIH_SET(valid_signature, fih_rc);
     }
 
     rc = !image_hash_valid;

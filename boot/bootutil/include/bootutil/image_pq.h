@@ -30,6 +30,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Fault-injection hardening.
+ *
+ * pq_image_verify returns MCUboot's `fih_ret` and MUST be invoked through
+ * FIH_CALL. That is not a style choice: with a plain int return, the caller ends
+ * up writing
+ *
+ *     if (verify(...) != 0) { fail; }
+ *     valid_signature = FIH_SUCCESS;         <-- minted locally
+ *
+ * where ONE glitched comparison (or one skipped branch) yields a fully valid
+ * signature verdict. With fih_ret, success is a masked double-variable produced
+ * INSIDE the verifier by FIH_RET, FIH_CALL seeds the result with FIH_FAILURE
+ * before the call, and the CFI counter proves the function actually ran to its
+ * FIH_RET. A caller can then only propagate success, never invent it.
+ *
+ * No host shim: the cross-validation harness supplies its own
+ * mcuboot_config/mcuboot_config.h and the handful of FIH runtime symbols
+ * (core/tests/fw_merkle/fih_host.c in the monorepo), so the host builds against
+ * THIS header with the real macros -- double variables and the CFI counter
+ * included. A stubbed-out FIH here would have made the harness prove the
+ * hardening works while testing a version that has none.
+ */
+#include "bootutil/fault_injection_hardening.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -184,12 +209,17 @@ int pq_region_shape_ok(pq_read_fn read, void *ctx, uint32_t image_len,
  * `pq_keys` / `ec_keys` are `key_count` public keys (32 bytes each,
  * PQ_MAX_KEYS max) supplied by the caller -- this module holds no key policy.
  *
- * On success returns 0 and, if `out_root` is non-NULL, the verified modelRoot.
- * Returns non-zero on ANY failure, including an image with no founder material
+ * Returns FIH_SUCCESS and, if `out_root` is non-NULL, the verified modelRoot.
+ * Returns FIH_FAILURE on ANY failure, including an image with no founder material
  * (callers that accept classic images must check pq_region_shape_ok's
  * `present` instead of treating absence as success).
+ *
+ * MUST be called via FIH_CALL and the result compared with FIH_EQ/FIH_NOT_EQ
+ * against FIH_SUCCESS -- see the hardening note at the top of this header. Never
+ * assign a success value to a verdict variable based on this function's result;
+ * propagate the returned fih_ret itself.
  */
-int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
+fih_ret pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
                    const uint8_t *const *pq_keys, const uint8_t *const *ec_keys,
                    uint32_t key_count, uint8_t *out_root);
 

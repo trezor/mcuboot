@@ -451,7 +451,7 @@ static int find_tlv(pq_read_fn read, void *ctx, uint32_t image_len,
     return -1;
 }
 
-int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
+fih_ret pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
                    const uint8_t *const *pq_keys, const uint8_t *const *ec_keys,
                    uint32_t key_count, uint8_t *out_root)
 {
@@ -460,47 +460,58 @@ int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
      * bootloader is single-threaded and does one image at a time). */
     static uint8_t slh_sig[PQ_SLH_SIG_LEN];
 
+    /* Base case is FAILURE and there is exactly ONE exit (FIH_RET at `out`), so
+     * every early bail-out leaves the verdict failing and the CFI counter is
+     * decremented exactly once. Success is written in one place, last, after all
+     * checks have passed -- see the tail of this function. */
+    FIH_DECLARE(fih_rc, FIH_FAILURE);
+
     struct pq_layout layout;
     bool present = false;
     uint8_t root[PQ_NODE_LEN];
     uint8_t sigmask = 0;
+    uint8_t sigmask_orig = 0;
     uint8_t sigmask_inv = 0; /* FIH: must end up equal to the value read */
     uint32_t off = 0;
     uint16_t len = 0;
+    /* FIH: counts completed slots independently of the sigmask bookkeeping, so a
+     * glitched loop bound has to be defeated twice to skip a verification. */
+    uint32_t slots_done = 0;
 
     if (pq_keys == NULL || ec_keys == NULL || key_count == 0 ||
         key_count > PQ_MAX_KEYS) {
-        return -1;
+        goto out;
     }
 
     /* Founder material must be present AND be exactly the expected records --
      * otherwise MCUboot's own TLV whitelist would reject the image later. */
-    if (pq_region_shape_ok(read, ctx, image_len, &present) != 0 || !present) {
-        return -1;
+    const int shape_rc = pq_region_shape_ok(read, ctx, image_len, &present);
+    if (FIH_NOT_EQ(shape_rc, 0) || FIH_NOT_EQ(present, true)) {
+        goto out;
     }
     if (pq_parse_layout(read, ctx, image_len, &layout) != 0 ||
-        !layout.has_pq) {
-        return -1;
+        FIH_NOT_EQ(layout.has_pq, true)) {
+        goto out;
     }
 
     /* leaf -> modelRoot, folding the co-path node by node straight out of its TLV
      * (no 1 KB buffer needed). */
     if (pq_leaf_hash(read, ctx, layout.cut, root) != 0) {
-        return -1;
+        goto out;
     }
     if (find_tlv(read, ctx, image_len, IMAGE_TLV_PQ_MERKLE_PROOF,
                  PQ_AREA_UNPROT, &off, &len) != 0) {
-        return -1;
+        goto out;
     }
     if (len == 0 || (len % PQ_NODE_LEN) != 0 ||
         (len / PQ_NODE_LEN) > PQ_MAX_MERKLE_PROOF_NODES) {
-        return -1;
+        goto out;
     }
     for (uint16_t i = 0; i < len / PQ_NODE_LEN; i++) {
         uint8_t sibling[PQ_NODE_LEN];
         if (read(ctx, off + (uint32_t)i * PQ_NODE_LEN, sibling,
                  PQ_NODE_LEN) != 0) {
-            return -1;
+            goto out;
         }
         fold_step(root, sibling);
     }
@@ -517,20 +528,20 @@ int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
     if (find_tlv(read, ctx, image_len, IMAGE_TLV_PQ_SIGMASK,
                  PQ_AREA_PROT, &off, &len) != 0 ||
         len != 1) {
-        return -1;
+        goto out;
     }
     if (read(ctx, off, &sigmask, 1) != 0 || sigmask == 0) {
-        return -1;
+        goto out;
     }
-    const uint8_t sigmask_orig = sigmask;
+    sigmask_orig = sigmask;
     /* No bits outside the key pool. */
-    if ((sigmask & (uint8_t)~((1u << key_count) - 1u)) != 0) {
-        return -1;
+    if (FIH_NOT_EQ((sigmask & (uint8_t)~((1u << key_count) - 1u)), 0)) {
+        goto out;
     }
     /* Exactly PQ_SIG_COUNT keys named -- a shorter mask must not pass as a
      * full threshold, and a longer one must not leave a key unverified. */
-    if (__builtin_popcount((unsigned)sigmask) != PQ_SIG_COUNT) {
-        return -1;
+    if (FIH_NOT_EQ(__builtin_popcount((unsigned)sigmask), PQ_SIG_COUNT)) {
+        goto out;
     }
 
     static const uint16_t slh_tlv[PQ_SIG_COUNT] = {
@@ -541,30 +552,30 @@ int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
     for (int slot = 0; slot < PQ_SIG_COUNT; slot++) {
         /* Slot i uses the i-th LOWEST set bit -- same convention as the STM. */
         if (sigmask == 0) {
-            return -1;
+            goto out;
         }
         int key_idx = 0;
         while (((sigmask >> key_idx) & 1u) == 0u) {
             key_idx++;
         }
         if ((uint32_t)key_idx >= key_count) {
-            return -1;
+            goto out;
         }
 
         /* Stage the PQ signature, then bind it into the EC message. */
         if (find_tlv(read, ctx, image_len, slh_tlv[slot], PQ_AREA_UNPROT, &off,
                      &len) != 0 ||
-            len != PQ_SLH_SIG_LEN ||
+            FIH_NOT_EQ(len, PQ_SLH_SIG_LEN) ||
             read(ctx, off, slh_sig, PQ_SLH_SIG_LEN) != 0) {
-            return -1;
+            goto out;
         }
 
         uint8_t ec_sig[PQ_EC_SIG_LEN];
         if (find_tlv(read, ctx, image_len, ec_tlv[slot], PQ_AREA_UNPROT, &off,
                      &len) != 0 ||
-            len != PQ_EC_SIG_LEN ||
+            FIH_NOT_EQ(len, PQ_EC_SIG_LEN) ||
             read(ctx, off, ec_sig, PQ_EC_SIG_LEN) != 0) {
-            return -1;
+            goto out;
         }
 
         /* hash = SHA256(modelRoot || slh_signature): the EC signature commits to
@@ -577,28 +588,59 @@ int pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
         PQ_SHA_FINISH(&sha, hash);
         PQ_SHA_DROP(&sha);
 
-        /* Cheap classical gate before the expensive PQ verify (as on the STM). */
-        if (ed25519_sign_open(hash, sizeof(hash), ec_keys[key_idx], ec_sig) != 0) {
-            return -1;
+        /* Both verdicts are captured into locals PRE-SET to a failing value and
+         * only then compared with FIH_NOT_EQ. Two reasons, both load-bearing:
+         *
+         *   - FIH_NOT_EQ double-evaluates its arguments under
+         *     FIH_ENABLE_DOUBLE_VARS, so inlining a verify call would run the
+         *     whole (7856-byte, hash-based) SLH-DSA verification TWICE;
+         *   - an instruction-skip that jumps over the call itself leaves the
+         *     sentinel behind, so the check fails closed rather than reading
+         *     whatever happened to be in the register.
+         *
+         * The two verifies are not individually duplicated: both must pass, so a
+         * single in-crypto fault is not sufficient -- an attacker needs two
+         * independent successful glitches against two different algorithms.
+         *
+         * Cheap classical gate before the expensive PQ verify (as on the STM). */
+        int ec_rc = -1;
+        int pq_rc = -1;
+
+        ec_rc = ed25519_sign_open(hash, sizeof(hash), ec_keys[key_idx], ec_sig);
+        if (FIH_NOT_EQ(ec_rc, 0)) {
+            goto out;
         }
-        if (crypto_sign_verify(slh_sig, PQ_SLH_SIG_LEN, root,
-                               PQ_NODE_LEN, pq_keys[key_idx]) != 0) {
-            return -1;
+        pq_rc = crypto_sign_verify(slh_sig, PQ_SLH_SIG_LEN, root, PQ_NODE_LEN,
+                                   pq_keys[key_idx]);
+        if (FIH_NOT_EQ(pq_rc, 0)) {
+            goto out;
         }
 
         sigmask &= (uint8_t)~(1u << key_idx);
         sigmask_inv |= (uint8_t)(1u << key_idx);
+        slots_done++;
     }
 
     /* Every named key used exactly once, nothing left over, and the reconstructed
-     * set identical to the signed one. */
-    if (sigmask != 0 || sigmask_inv != sigmask_orig) {
-        return -1;
+     * set identical to the signed one. `slots_done` is the independent witness
+     * that the loop really ran PQ_SIG_COUNT times. */
+    if (FIH_NOT_EQ(slots_done, PQ_SIG_COUNT) || FIH_NOT_EQ(sigmask, 0) ||
+        FIH_NOT_EQ(sigmask_inv, sigmask_orig)) {
+        goto out;
     }
 
     if (out_root != NULL) {
         memcpy(out_root, root, PQ_NODE_LEN);
     }
-    return 0;
+
+    /* The ONLY success assignment, reached only by falling off the end of every
+     * check above. fih_delay() makes the moment of the write less predictable. */
+    if (fih_delay()) {
+        FIH_SET(fih_rc, FIH_SUCCESS);
+    }
+
+out:
+    FIH_RET(fih_rc);
 }
+
 #endif /* !PQ_OMIT_SIGNATURE_VERIFY */
