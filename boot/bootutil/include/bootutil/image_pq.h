@@ -73,6 +73,14 @@ extern "C" {
  *
  * These records MUST be the LAST entries in the unprotected TLV area.
  */
+/*
+ * MCUboot's security-counter TLV, mirrored rather than included: this header is
+ * also compiled by the host cross-validation, which has no bootutil/image.h. A
+ * _Static_assert in image_validate.c pins it to the real IMAGE_TLV_SEC_CNT, so
+ * the two cannot drift apart unnoticed.
+ */
+#define IMAGE_TLV_PQ_SEC_CNT 0x50
+
 #define IMAGE_TLV_PQ_FIRST 0x00A4
 #define IMAGE_TLV_PQ_SLH_SIG_0 0x00A4 /* SLH-DSA over modelRoot */
 #define IMAGE_TLV_PQ_SLH_SIG_1 0x00A5
@@ -222,6 +230,40 @@ int pq_region_shape_ok(pq_read_fn read, void *ctx, uint32_t image_len,
 fih_ret pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
                    const uint8_t *const *pq_keys, const uint8_t *const *ec_keys,
                    uint32_t key_count, uint8_t *out_root);
+
+/*
+ * Read the image's security counter (IMAGE_TLV_SEC_CNT) for rollback protection.
+ *
+ * Searched in the PROTECTED TLV area only, which is what makes this trustworthy:
+ * protected TLVs sit inside MCUboot's image hash AND inside the founder leaf (the
+ * leaf covers everything up to the first PQ TLV), so the counter is already
+ * covered by the founder signature -- no extra signing, and it cannot be raised
+ * or forged without invalidating that signature. An unprotected copy would be
+ * attacker-controlled, so one is never consulted.
+ *
+ * Why this exists at all: MCUboot's own MCUBOOT_HW_ROLLBACK_PROT compares
+ * counters between SLOTS when deciding to swap, and updates the NV counter after
+ * a swap. With CONFIG_SINGLE_APPLICATION_SLOT there is no second slot and no swap
+ * decision, so neither runs, and nothing compares the image against the stored
+ * counter at boot. That leaves an old-but-genuinely-signed image writable
+ * straight into slot0 over serial recovery -- the one path the STM-side founder
+ * gate cannot see.
+ *
+ * The value is the STM boot header's monotonic_version, stamped by the SIGNER --
+ * ONE anti-rollback axis for the coupled release, not a counter the nRF keeps on
+ * its own. Two independent axes could settle into states neither side rejects,
+ * notably a forward STM paired with an nRF rolled back over serial recovery. The
+ * STM enforces the same number in its boardloader against an NV monoctr.
+ *
+ * `*out_cnt` is set to 0 when the image carries no counter, which is a valid
+ * state (an image built without imgtool's -s): any stored counter above 0 then
+ * refuses it, so absence can only ever be MORE restrictive, never a bypass.
+ *
+ * Returns 0 on success (counter found, or validly absent), non-zero if the image
+ * is malformed or the record has the wrong size.
+ */
+int pq_image_security_counter(pq_read_fn read, void *ctx, uint32_t image_len,
+                              uint32_t *out_cnt);
 
 /* Signature slots per image and the key-pool bound, mirroring the STM's
  * BOOT_HEADER_SIGNATURE_COUNT and its <=3 key assertion. */

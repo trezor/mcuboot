@@ -73,6 +73,9 @@ void tc_fault_handler(const char *msg) {
 #ifdef CONFIG_BOOT_PQ_SECURE_BOOT
 /* Founder TLV types + sizes, needed by allowed_unprot_tlvs below. */
 #include "bootutil/image_pq.h"
+#ifdef CONFIG_BOOT_PQ_ROLLBACK_PROT
+#include "bootutil/security_cnt.h"
+#endif
 #endif
 
 #define EXPECTED_SIG_0_TLV 0x00A0
@@ -129,6 +132,11 @@ static const uint16_t allowed_unprot_tlvs[] = {
 #include <ed25519-donna/ed25519.h>
 
 #ifdef CONFIG_BOOT_PQ_SECURE_BOOT
+/* image_pq.h mirrors this TLV type because it is also compiled by the host
+ * cross-validation, which has no bootutil/image.h. Pin the two together. */
+_Static_assert(IMAGE_TLV_PQ_SEC_CNT == IMAGE_TLV_SEC_CNT,
+               "image_pq.h security-counter TLV drifted from bootutil/image.h");
+
 /*
  * Founder public keys -- the SAME keys the Trezor STM boot header is verified
  * against, because both MCUs verify the SAME founder signature over modelRoot.
@@ -462,6 +470,110 @@ bootutil_img_validate(struct boot_loader_state *state,
             goto out;
         }
         FIH_SET(valid_signature, fih_rc);
+
+#ifdef CONFIG_BOOT_PQ_ROLLBACK_PROT
+        /*
+         * Rollback protection at BOOT time, which MCUboot does not otherwise do.
+         * Its MCUBOOT_HW_ROLLBACK_PROT compares counters between SLOTS when
+         * deciding to swap and updates the NV counter afterwards; with
+         * CONFIG_SINGLE_APPLICATION_SLOT there is no second slot and no swap, so
+         * neither runs and nothing checks the image already sitting in slot0.
+         *
+         * That gap IS the serial-recovery threat: an attacker with the nRF's UART
+         * and RESET/STAY_IN_BLD pins writes an OLD but genuinely founder-signed
+         * image straight into slot0. Founder verification passes -- it is a real
+         * release -- and the STM is not on that path, so only a stored monotonic
+         * counter can refuse it.
+         *
+         * The counter comes from the PROTECTED TLV area, so it sits inside the
+         * founder leaf and is already covered by the founder signature: it cannot
+         * be raised without breaking that signature. Checked only AFTER the
+         * signature verified, so an unauthenticated image can never move it.
+         *
+         * The value IS the STM boot header's monotonic_version -- one axis for the
+         * coupled release, stamped by the signer from the header it is signing, so
+         * the two cannot disagree. This mirrors the STM boardloader exactly (read
+         * the NV floor, refuse below it, then raise it), which is what keeps the
+         * pair from drifting into a state neither side rejects.
+         */
+        {
+            uint32_t img_cnt = 0;
+            FIH_DECLARE(cnt_fih, FIH_FAILURE);
+            fih_int nv_cnt = fih_int_encode(0);
+
+            if (pq_image_security_counter(pq_read_image, &fctx, it.tlv_end,
+                                          &img_cnt) != 0) {
+                rc = -1;
+                goto out;
+            }
+
+            FIH_CALL(boot_nv_security_counter_get, cnt_fih, 0, &nv_cnt);
+            if (FIH_NOT_EQ(cnt_fih, FIH_SUCCESS)) {
+                /*
+                 * No readable counter -- the provision page has no counter
+                 * collection. That is a PROVISIONING state, not a runtime one, so
+                 * the response differs by build:
+                 *
+                 *   production: refuse. A production device without a provisioned
+                 *               counter has no rollback protection at all, and
+                 *               booting anyway would silently ship that.
+                 *   devel:      warn and skip. Devel keys are public, so there is
+                 *               no security to protect here, and failing closed
+                 *               would brick every un-provisioned devkit on first
+                 *               boot -- including during bring-up of this feature.
+                 */
+#ifdef MCUBOOT_PRODUCTION_KEY
+                BOOT_LOG_ERR("no provisioned security counter; refusing to boot");
+                rc = -1;
+                goto out;
+#else
+                BOOT_LOG_WRN("no provisioned security counter; "
+                             "rollback protection INACTIVE (devel build)");
+#endif
+            } else {
+                uint32_t nv = (uint32_t)fih_int_decode(nv_cnt);
+
+                /* Refuse anything below the floor. Equal is fine -- that is the
+                 * image already in service. THIS is the security property. */
+                if (img_cnt < nv) {
+                    BOOT_LOG_ERR("security counter %u < stored %u: rollback refused",
+                                 (unsigned)img_cnt, (unsigned)nv);
+                    rc = -1;
+                    goto out;
+                }
+
+                /*
+                 * Raising the floor is best-effort, and deliberately NOT fatal.
+                 * The counter store is a fixed array of write-once slots, so a
+                 * bump can legitimately fail with -ENOMEM once they are spent;
+                 * refusing to boot then would brick a device on a perfectly valid
+                 * image. Losing the raise only forfeits FUTURE tightening -- the
+                 * check above has already authorised this image.
+                 *
+                 * Only advanced on production builds. The nRF's slots are
+                 * write-once and, unlike the STM's counter (secret_erase /
+                 * secret_unlock_bootloader), there is no way to wind them back, so
+                 * advancing on devel builds would permanently pin devkits above
+                 * older releases while testing.
+                 */
+#ifdef MCUBOOT_PRODUCTION_KEY
+                if (img_cnt > nv) {
+                    if (boot_nv_security_counter_update(0, img_cnt) != 0) {
+                        BOOT_LOG_WRN("could not raise security counter to %u "
+                                     "(slots exhausted?); booting anyway",
+                                     (unsigned)img_cnt);
+                    }
+                }
+#else
+                if (img_cnt > nv) {
+                    BOOT_LOG_INF("security counter %u > stored %u; not advancing "
+                                 "(devel build, slots are write-once)",
+                                 (unsigned)img_cnt, (unsigned)nv);
+                }
+#endif
+            }
+        }
+#endif /* CONFIG_BOOT_PQ_ROLLBACK_PROT */
     }
 
     rc = !image_hash_valid;

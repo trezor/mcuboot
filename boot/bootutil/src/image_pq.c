@@ -451,6 +451,39 @@ static int find_tlv(pq_read_fn read, void *ctx, uint32_t image_len,
     return -1;
 }
 
+/* Uses find_tlv above, hence its position inside this region. */
+int pq_image_security_counter(pq_read_fn read, void *ctx, uint32_t image_len,
+                              uint32_t *out_cnt)
+{
+    uint32_t off = 0;
+    uint16_t len = 0;
+
+    if (out_cnt == NULL) {
+        return -1;
+    }
+    *out_cnt = 0;
+
+    /* PROTECTED area only -- see the header. An unprotected copy is not
+     * founder-covered, so it is attacker-controlled and never consulted. */
+    if (find_tlv(read, ctx, image_len, IMAGE_TLV_PQ_SEC_CNT, PQ_AREA_PROT, &off,
+                 &len) != 0) {
+        /* Absent is valid and fails SAFE: 0 is refused by any stored counter
+         * above 0. Distinguishing "absent" from "malformed" is deliberate --
+         * a wrong-sized record below is an error, not a zero. */
+        return 0;
+    }
+    if (len != sizeof(*out_cnt)) {
+        return -1;
+    }
+
+    uint8_t b[4];
+    if (read(ctx, off, b, sizeof(b)) != 0) {
+        return -1;
+    }
+    *out_cnt = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
+               ((uint32_t)b[3] << 24); /* little-endian, as imgtool writes it */
+    return 0;
+}
 fih_ret pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
                    const uint8_t *const *pq_keys, const uint8_t *const *ec_keys,
                    uint32_t key_count, uint8_t *out_root)

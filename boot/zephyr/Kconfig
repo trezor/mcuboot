@@ -501,6 +501,67 @@ config BOOT_PQ_SECURE_BOOT
       Needed on post-quantum-native models (e.g. T3T2). Models that keep the
       classic Ed25519-only scheme (e.g. T3W1) leave this off and are unaffected.
 
+config BOOT_PQ_ROLLBACK_PROT
+    bool "Refuse founder-signed images below the stored security counter"
+    depends on BOOT_PQ_SECURE_BOOT
+    select SECURE_BOOT_STORAGE
+    default n
+    help
+      Rollback protection for founder-verified images, enforced at BOOT time.
+
+      MCUBOOT_HW_ROLLBACK_PROT does not cover this case. It compares security
+      counters between SLOTS when deciding whether to swap, and updates the
+      non-volatile counter after a swap; with SINGLE_APPLICATION_SLOT there is no
+      second slot and no swap decision, so neither runs and nothing ever compares
+      the image already in slot0 against the stored counter.
+
+      That gap is reachable: an attacker with the nRF's UART and
+      RESET/STAY_IN_BLD pins enters serial recovery and writes an OLD but
+      genuinely founder-signed image directly into slot0. Founder verification
+      accepts it (it is a real release) and the STM is not involved on that path,
+      so only a stored monotonic counter can refuse it.
+
+      With this enabled, an image whose IMAGE_TLV_SEC_CNT is below the stored
+      counter is rejected, and the stored counter is raised once a higher one has
+      verified. The counter is read from the PROTECTED TLV area, so it is inside
+      the founder leaf and already covered by the founder signature -- it cannot
+      be raised without breaking that signature, and it is only consulted after
+      the signature has verified.
+
+      The counter is not an nRF-specific number: the signer stamps the STM boot
+      header's monotonic_version into it, so both MCUs enforce ONE axis for the
+      coupled release. Two independent axes could settle into a state neither side
+      rejects -- a forward STM paired with an nRF rolled back over serial recovery.
+
+      Note the counter is MONOTONIC and rises on first boot of a newer image, so
+      a release that increments monotonic_version can never be downgraded
+      afterwards -- including deliberately, for recovery. Bump it for
+      security-relevant releases rather than every build. An image with no counter
+      reads as 0, which any stored value above 0 refuses, so absence is never a
+      bypass.
+
+      Requires SECURE_BOOT_STORAGE (NSIB bl_storage) for the counter itself; on
+      nRF54L that is backed by RRAMC. The counter is a fixed array of WRITE-ONCE
+      slots (240 by default, 288 max on nRF54L), one consumed per increase, and
+      there is no way to wind it back -- unlike the STM's counter, which a
+      development device can clear via secret_unlock_bootloader. Consequences,
+      all handled in image_validate.c:
+
+        * un-provisioned counter: production builds refuse to boot (a production
+          device with no counter has no protection, and booting would ship that
+          silently); devel builds warn and run without enforcement, so bring-up
+          and un-provisioned devkits are not bricked.
+        * slots exhausted: the floor simply stops rising. Not fatal -- the
+          image was already authorised by the check, and refusing would brick a
+          device on a valid image.
+        * the floor is only ADVANCED on production builds, so routine testing
+          does not permanently pin devkits above older releases.
+
+      The practical ceiling on the axis is the STM's, not the nRF's: monoctr
+      stores the value unary and caps at MONOCTR_MAX_VALUE (63). A _Static_assert
+      in the STM's version_check.c and a range check in the signer both enforce
+      it, so exceeding it fails at build/sign time rather than on device.
+
       Costs roughly 16 kB of image (two 7856-byte SLH-DSA signatures) plus the
       SPHINCS+ verify code, and one extra hash pass over the image at boot.
 
