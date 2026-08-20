@@ -541,7 +541,13 @@ config BOOT_PQ_ROLLBACK_PROT
       bypass.
 
       Requires SECURE_BOOT_STORAGE (NSIB bl_storage) for the counter itself; on
-      nRF54L that is backed by RRAMC. The counter is a fixed array of WRITE-ONCE
+      nRF54L that is backed by RRAMC. image_validate.c uses bl_storage's plain-C
+      get/set_monotonic_counter rather than MCUboot's boot_nv_security_counter_*,
+      because NCS's adapter for the latter (nrf_nv_counters.c) declares fih_int
+      where security_cnt.h declares fih_ret -- identical only with FIH off, and
+      this bootloader builds at profile MEDIUM. Going direct also avoids needing
+      MCUBOOT_HW_DOWNGRADE_PREVENTION, whose swap-time paths SINGLE_APPLICATION_SLOT
+      never reaches. The counter is a fixed array of WRITE-ONCE
       slots (240 by default, 288 max on nRF54L), one consumed per increase, and
       there is no way to wind it back -- unlike the STM's counter, which a
       development device can clear via secret_unlock_bootloader. Consequences,

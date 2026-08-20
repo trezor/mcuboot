@@ -74,7 +74,22 @@ void tc_fault_handler(const char *msg) {
 /* Founder TLV types + sizes, needed by allowed_unprot_tlvs below. */
 #include "bootutil/image_pq.h"
 #ifdef CONFIG_BOOT_PQ_ROLLBACK_PROT
-#include "bootutil/security_cnt.h"
+/*
+ * NSIB's counter API directly, NOT MCUboot's boot_nv_security_counter_*.
+ *
+ * The MCUboot-facing adapter (nrf/subsys/bootloader/bl_storage/nrf_nv_counters.c)
+ * declares those functions returning fih_int while bootutil/security_cnt.h
+ * declares them fih_ret. Those are the same type only when FIH is OFF; under
+ * FIH_ENABLE_DOUBLE_VARS -- profile MEDIUM, which this bootloader builds with --
+ * fih_int is a struct and fih_ret is a volatile int, so the adapter does not
+ * compile. It also requires CONFIG_MCUBOOT_HW_DOWNGRADE_PREVENTION, whose
+ * swap-time machinery is inert under SINGLE_APPLICATION_SLOT anyway.
+ *
+ * Going straight to bl_storage skips that adapter, needs no extra Kconfig, and
+ * loses nothing: these are plain-C accessors, and the FIH hardening that matters
+ * is on the comparison below, which is ours.
+ */
+#include <bl_storage.h>
 #endif
 #endif
 
@@ -498,8 +513,8 @@ bootutil_img_validate(struct boot_loader_state *state,
          */
         {
             uint32_t img_cnt = 0;
-            FIH_DECLARE(cnt_fih, FIH_FAILURE);
-            fih_int nv_cnt = fih_int_encode(0);
+            counter_t nv_raw = 0;
+            int cnt_rc = -1;
 
             if (pq_image_security_counter(pq_read_image, &fctx, it.tlv_end,
                                           &img_cnt) != 0) {
@@ -507,8 +522,9 @@ bootutil_img_validate(struct boot_loader_state *state,
                 goto out;
             }
 
-            FIH_CALL(boot_nv_security_counter_get, cnt_fih, 0, &nv_cnt);
-            if (FIH_NOT_EQ(cnt_fih, FIH_SUCCESS)) {
+            cnt_rc = get_monotonic_counter(BL_MONOTONIC_COUNTERS_DESC_MCUBOOT_ID0,
+                                           &nv_raw);
+            if (FIH_NOT_EQ(cnt_rc, 0)) {
                 /*
                  * No readable counter -- the provision page has no counter
                  * collection. That is a PROVISIONING state, not a runtime one, so
@@ -527,11 +543,11 @@ bootutil_img_validate(struct boot_loader_state *state,
                 rc = -1;
                 goto out;
 #else
-                BOOT_LOG_WRN("no provisioned security counter; "
-                             "rollback protection INACTIVE (devel build)");
+                BOOT_LOG_WRN("no provisioned security counter (%d); "
+                             "rollback protection INACTIVE (devel build)", cnt_rc);
 #endif
             } else {
-                uint32_t nv = (uint32_t)fih_int_decode(nv_cnt);
+                uint32_t nv = (uint32_t)nv_raw;
 
                 /* Refuse anything below the floor. Equal is fine -- that is the
                  * image already in service. THIS is the security property. */
@@ -558,10 +574,13 @@ bootutil_img_validate(struct boot_loader_state *state,
                  */
 #ifdef MCUBOOT_PRODUCTION_KEY
                 if (img_cnt > nv) {
-                    if (boot_nv_security_counter_update(0, img_cnt) != 0) {
-                        BOOT_LOG_WRN("could not raise security counter to %u "
-                                     "(slots exhausted?); booting anyway",
-                                     (unsigned)img_cnt);
+                    int set_rc = set_monotonic_counter(
+                        BL_MONOTONIC_COUNTERS_DESC_MCUBOOT_ID0,
+                        (counter_t)img_cnt);
+                    if (set_rc != 0) {
+                        BOOT_LOG_WRN("could not raise security counter to %u (%d, "
+                                     "slots exhausted?); booting anyway",
+                                     (unsigned)img_cnt, set_rc);
                     }
                 }
 #else
