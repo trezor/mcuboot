@@ -155,6 +155,73 @@ set_source_files_properties(
   ${BOOT_DIR}/bootutil/trezor-crypto/memzero.c
   PROPERTIES COMPILE_FLAGS "-D__STDC_WANT_LIB_EXT1__=0 -D_DEFAULT_SOURCE -include strings.h"
 )
+# Trezor founder Merkle tree (post-quantum) verification.
+#
+# SPHINCS+ comes from ext/sphincsplus, a SUBMODULE of this repository pinned to the
+# same upstream commit the monorepo uses (sphincs/sphincsplus, branch
+# consistent-basew). Deliberately NOT a symlink into the trezor-firmware tree: the
+# monorepo pins this repo in nordic/trezor/west.yml, so pointing back at it would
+# create a dependency cycle and stop this repo building/CI-ing standalone.
+#
+# What must match between the two MCUs is the PARAMETER SET (sphincs-sha2-128s), not
+# the code revision -- any correct implementation verifies the same signatures. Keep
+# the pins equal anyway, and let monorepo CI compare them so drift is loud.
+#
+# The source list mirrors the STM's (core/embed/crypto/build.rs:add_sphincsplus)
+# and is VERIFY-ONLY: merkle.c / wotsx1.c / utilsx1.c / randombytes.c are
+# signing-side and deliberately omitted (verification needs no RNG).
+#
+# REQUIRES --gc-sections (Zephyr's ld linker_flags.cmake supplies it, as does the
+# STM build). This is a hard dependency, not a nicety: sign.c's signing entry
+# points reference SPX_merkle_sign / SPX_merkle_gen_root / randombytes and fors.c
+# references SPX_treehashx1, so WITHOUT section GC the link fails with undefined
+# references to those symbols. Verified: the subset links and verifies with
+# -ffunction-sections -fdata-sections -Wl,--gc-sections, and fails to link without.
+# If that ever changes, add merkle.c/utilsx1.c/wotsx1.c plus a randombytes stub
+# rather than reintroducing signing support.
+if(DEFINED CONFIG_BOOT_PQ_SECURE_BOOT)
+  set(SPHINCSPLUS_DIR ${MCUBOOT_DIR}/ext/sphincsplus/ref)
+
+  if(NOT EXISTS ${SPHINCSPLUS_DIR}/sign.c)
+    message(FATAL_ERROR
+      "CONFIG_BOOT_PQ_SECURE_BOOT=y but ${SPHINCSPLUS_DIR} is empty. "
+      "Run: git submodule update --init ext/sphincsplus")
+  endif()
+
+  # Deliberately NO include_directories for SPHINCSPLUS_DIR: it ships generically
+  # named headers (sha2.h, params.h, api.h, utils.h) and putting it on the
+  # library-wide path makes them shadow trezor-crypto's for OTHER sources -- it
+  # broke ed25519.c exactly that way (ref/sha2.h has no SHA512_CTX/sha512_*).
+  # sphincsplus' own includes are quoted and resolve next to their source file, so
+  # it needs no -I; image_pq.c reaches api.h by relative path. Only the
+  # PARAMS define is required, by any TU that includes params.h.
+  zephyr_library_compile_definitions(PARAMS=sphincs-sha2-128s)
+
+  zephyr_library_sources(
+    ${BOOT_DIR}/bootutil/src/image_pq.c
+    ${SPHINCSPLUS_DIR}/address.c
+    ${SPHINCSPLUS_DIR}/fors.c
+    ${SPHINCSPLUS_DIR}/hash_sha2.c
+    ${SPHINCSPLUS_DIR}/sha2.c
+    ${SPHINCSPLUS_DIR}/sign.c
+    ${SPHINCSPLUS_DIR}/thash_sha2_simple.c
+    ${SPHINCSPLUS_DIR}/utils.c
+    ${SPHINCSPLUS_DIR}/wots.c
+    )
+
+  # Same suppression the STM build needs for this upstream revision.
+  set_source_files_properties(
+    ${SPHINCSPLUS_DIR}/address.c
+    ${SPHINCSPLUS_DIR}/fors.c
+    ${SPHINCSPLUS_DIR}/hash_sha2.c
+    ${SPHINCSPLUS_DIR}/sha2.c
+    ${SPHINCSPLUS_DIR}/sign.c
+    ${SPHINCSPLUS_DIR}/thash_sha2_simple.c
+    ${SPHINCSPLUS_DIR}/utils.c
+    ${SPHINCSPLUS_DIR}/wots.c
+    PROPERTIES COMPILE_OPTIONS "-Wno-incompatible-pointer-types"
+    )
+endif()
 
 if((CONFIG_BOOT_ENCRYPT_X25519 AND CONFIG_BOOT_ED25519_PSA)
    OR (CONFIG_BOOT_ENCRYPT_EC256 AND CONFIG_BOOT_ECDSA_PSA))
