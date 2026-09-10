@@ -11,6 +11,18 @@
 
 #include <string.h>
 
+#ifdef PQ_HOST_TEST
+/* The host cross-validation supplies the model it is testing. */
+#ifndef MODEL_IDENTIFIER
+#error "PQ_HOST_TEST must define MODEL_IDENTIFIER"
+#endif
+#else
+#include "mcuboot_config/mcuboot_config.h" /* MODEL_IDENTIFIER */
+#ifndef MODEL_IDENTIFIER
+#error "CONFIG_MODEL_IDENTIFIER must be set: it is bound into the founder leaf"
+#endif
+#endif
+
 /*
  * Crypto, mirroring the STM's boot_header.c: SPHINCS+ (SLH-DSA) and ed25519-donna.
  *
@@ -536,13 +548,37 @@ fih_ret pq_image_verify(pq_read_fn read, void *ctx, uint32_t image_len,
         goto out;
     }
     {
-        /* Fold the leaf, not the raw hash: H(0x00 || hash). */
+        /* Fold the ROLE-BOUND SLOT, not the bare hash: leaf = H(0x00 || slot).
+         * The slot names which co-processor this image is for, because the fold
+         * alone cannot -- sorted pairs carry no direction, so a leaf's position
+         * is unrecoverable and a passing fold would prove only that the founder
+         * committed to SOME artifact under this modelRoot.
+         *
+         * `model` is MODEL_IDENTIFIER, the same value image_validate.c already
+         * pins EXPECTED_MODEL_TLV against, written LITTLE-ENDIAN so its bytes
+         * are the ASCII the STM copies from MODEL_INTERNAL_NAME and the signer
+         * reads out of the model-id TLV. `kind` and `index` are this build's,
+         * never the image's. Byte-for-byte with coproc_slot_t (STM) and
+         * coproc_slot_value() (signer) -- if any of the three disagrees, the
+         * folds diverge and the image simply stops verifying. */
+        uint8_t slot[PQ_COPROC_SLOT_LEN];
+        memset(slot, 0, sizeof(slot));
+        memcpy(slot, PQ_COPROC_SLOT_TAG, 4);
+        slot[4] = (uint8_t)(MODEL_IDENTIFIER & 0xFFu);
+        slot[5] = (uint8_t)((MODEL_IDENTIFIER >> 8) & 0xFFu);
+        slot[6] = (uint8_t)((MODEL_IDENTIFIER >> 16) & 0xFFu);
+        slot[7] = (uint8_t)((MODEL_IDENTIFIER >> 24) & 0xFFu);
+        slot[8] = (uint8_t)PQ_COPROC_KIND_NRF;
+        slot[9] = (uint8_t)PQ_COPROC_INDEX;
+        /* slot[10..11] reserved, already zero */
+        memcpy(&slot[12], root, PQ_NODE_LEN); /* root holds the image hash */
+
         uint8_t leaf[PQ_NODE_LEN];
         static const uint8_t prefix0[] = {0x00};
         PQ_SHA_CTX sha;
         PQ_SHA_INIT(&sha);
         PQ_SHA_UPDATE(&sha, prefix0, sizeof(prefix0));
-        PQ_SHA_UPDATE(&sha, root, PQ_NODE_LEN);
+        PQ_SHA_UPDATE(&sha, slot, sizeof(slot));
         PQ_SHA_FINISH(&sha, leaf);
         PQ_SHA_DROP(&sha);
         memcpy(root, leaf, PQ_NODE_LEN);

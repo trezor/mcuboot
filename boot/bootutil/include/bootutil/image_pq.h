@@ -61,6 +61,24 @@ extern "C" {
 
 #define PQ_NODE_LEN 32 /* SHA-256 */
 
+/* Co-processor slot -- the ROLE-BOUND leaf value. Mirrors coproc_slot_t in the
+ * STM's sec/image/inc/sec/boot_header.h and coproc_slot_value() in the signer's
+ * nrf_tree.py; all three must produce identical bytes or the folds disagree and
+ * the image stops verifying.
+ *
+ *   tag(4) | model(4) | kind(1) | index(1) | reserved(2) | digest(32) = 44
+ *
+ * The tree folds sorted pairs, so a proof carries no direction and a leaf's
+ * position is unrecoverable: without the role in the value, a fold proves only
+ * that the founder committed to SOME artifact under this modelRoot. That is
+ * what this fixes. `kind` and `index` come from THIS build, never from the
+ * image -- an index read from the artifact could be re-tagged by whoever
+ * supplies it. */
+#define PQ_COPROC_SLOT_LEN 44
+#define PQ_COPROC_SLOT_TAG "TRZP"
+#define PQ_COPROC_KIND_NRF 1
+#define PQ_COPROC_INDEX 0
+
 /*
  * Founder TLVs, in MCUboot's vendor range (0x00a0-0x00ff), continuing the
  * existing allocation (0x00A0/A1 image sigs, 0x00A2 sigmask, 0x00A3 model id).
